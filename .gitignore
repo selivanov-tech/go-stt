@@ -1,0 +1,11 @@
+# Go
+/bin/
+*.test
+
+# Env / secrets
+.env
+.env.local
+
+# macOS / IDE
+.DS_Store
+.idea/
