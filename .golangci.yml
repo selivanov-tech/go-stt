@@ -1,0 +1,14 @@
+# golangci-lint v2 (https://golangci-lint.run). Install: brew install golangci-lint
+version: "2"
+
+linters:
+  # default set (errcheck, govet, ineffassign, staticcheck, unused) + extras:
+  enable:
+    - bodyclose   # HTTP response bodies are closed
+    - misspell
+    - unconvert
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
