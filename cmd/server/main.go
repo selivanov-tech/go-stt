@@ -43,7 +43,7 @@ func main() {
 		}
 	}
 
-	q := queue.NewInProc(cfg.QueueWorkers, 256)
+	q := queue.NewInProc(cfg.QueueWorkers, cfg.QueueBuffer)
 	srv := api.NewServer(cfg, q, st)
 
 	httpServer := &http.Server{Addr: cfg.Addr, Handler: srv.Routes()}

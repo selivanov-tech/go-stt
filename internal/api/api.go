@@ -17,6 +17,8 @@ import (
 	"github.com/selivanov-tech/go-stt/internal/store"
 )
 
+const maxRequestBytes = 32 << 20 // 32 MiB: generous for inline base64 audio
+
 type Server struct {
 	cfg   config.Config
 	queue queue.Queue
@@ -53,6 +55,24 @@ func (r transcribeRequest) opts() engine.Options {
 	return engine.Options{Language: r.Language, Model: r.Model}
 }
 
+func (r transcribeRequest) hasAudio() bool {
+	return r.AudioURL != "" || r.AudioPath != "" || r.AudioBase64 != ""
+}
+
+func decodeTranscribe(w http.ResponseWriter, r *http.Request) (transcribeRequest, bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+	var req transcribeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+		return req, false
+	}
+	if !req.hasAudio() {
+		writeError(w, http.StatusBadRequest, "one of audio_path, audio_url, audio_base64 is required")
+		return req, false
+	}
+	return req, true
+}
+
 func (s *Server) engineFor(spec string) engine.Engine {
 	if spec == "" {
 		spec = s.cfg.DefaultEngine
@@ -70,9 +90,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
-	var req transcribeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+	req, ok := decodeTranscribe(w, r)
+	if !ok {
 		return
 	}
 	eng := s.engineFor(req.Engine)
@@ -88,9 +107,8 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
-	var req transcribeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
+	req, ok := decodeTranscribe(w, r)
+	if !ok {
 		return
 	}
 	eng := s.engineFor(req.Engine)
