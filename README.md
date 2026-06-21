@@ -9,11 +9,19 @@ cloud STT APIs directly in the production profile.
 
 Module: `github.com/selivanov-tech/go-stt`.
 
-```
- clients ─POST audio→ go-stt ─→ engine ─→ py-stt worker (local models)
-                      /healthz             └→ cloud APIs (Deepgram, ...)
-                      /v1/transcribe (sync)
-                      /v1/jobs + /v1/jobs/{id} (async, queued)
+```mermaid
+flowchart LR
+    client(["clients"])
+
+    subgraph gostt ["go-stt"]
+        api["HTTP API<br/>• /healthz<br/>• /v1/transcribe — sync<br/>• /v1/jobs, /v1/jobs/{id} — async, queued"]
+        engine{{"engine"}}
+        api --> engine
+    end
+
+    client -- "POST audio" --> api
+    engine --> worker["py-stt worker<br/>(local models)"]
+    engine --> cloud["cloud APIs<br/>(Deepgram, …)"]
 ```
 
 Design + decisions: [SPEC.md](SPEC.md).
