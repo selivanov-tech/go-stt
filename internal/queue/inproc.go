@@ -2,19 +2,21 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"sync"
 )
 
-// InProc is a bounded in-process worker pool. No external dependencies — good
-// for running locally. Swap for an asynq/Redis impl when deploying multi-node.
+// ErrClosed is returned by Submit after the queue has shut down.
+var ErrClosed = errors.New("queue is shut down")
+
+// InProc is a bounded in-process worker pool. The tasks channel is never closed;
+// shutdown is signalled by cancelling ctx. That way no Submit pins a lock across
+// a blocking send, so Shutdown's deadline always wins.
 type InProc struct {
 	tasks  chan Task
 	wg     sync.WaitGroup
 	ctx    context.Context
 	cancel context.CancelFunc
-
-	mu     sync.Mutex
-	closed bool
 }
 
 func NewInProc(workers, buffer int) *InProc {
@@ -36,45 +38,39 @@ func NewInProc(workers, buffer int) *InProc {
 
 func (q *InProc) worker() {
 	defer q.wg.Done()
-	for t := range q.tasks {
-		t(q.ctx)
+	for {
+		select {
+		case t := <-q.tasks:
+			t(q.ctx)
+		case <-q.ctx.Done():
+			return
+		}
 	}
 }
 
 func (q *InProc) Submit(t Task) error {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if q.closed {
-		return context.Canceled
+	if q.ctx.Err() != nil {
+		return ErrClosed
 	}
 	select {
 	case q.tasks <- t:
 		return nil
 	case <-q.ctx.Done():
-		return context.Canceled
+		return ErrClosed
 	}
 }
 
 func (q *InProc) Shutdown(ctx context.Context) error {
-	q.mu.Lock()
-	if !q.closed {
-		q.closed = true
-		close(q.tasks)
-	}
-	q.mu.Unlock()
-
+	q.cancel()
 	done := make(chan struct{})
 	go func() {
 		q.wg.Wait()
 		close(done)
 	}()
-
 	select {
 	case <-done:
-		q.cancel()
 		return nil
 	case <-ctx.Done():
-		q.cancel()
 		return ctx.Err()
 	}
 }

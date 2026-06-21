@@ -1,5 +1,5 @@
-// Package worker optionally launches and supervises the Python model-worker, so
-// `./stt-service` can boot the whole local stack with one command.
+// Package worker can launch and supervise the Python model-worker, so the
+// whole local stack boots with one command.
 package worker
 
 import (
@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -21,6 +22,8 @@ func New(cmdline, dir string) *Supervisor {
 	return &Supervisor{cmdline: cmdline, dir: dir}
 }
 
+// Start runs the worker in its own process group, so Stop can signal the whole
+// tree. cmdline is split on spaces — fine for the simple commands we configure.
 func (s *Supervisor) Start() error {
 	if strings.TrimSpace(s.cmdline) == "" {
 		return nil
@@ -30,6 +33,7 @@ func (s *Supervisor) Start() error {
 	c.Dir = s.dir
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
+	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := c.Start(); err != nil {
 		return fmt.Errorf("start worker: %w", err)
 	}
@@ -37,9 +41,27 @@ func (s *Supervisor) Start() error {
 	return nil
 }
 
+// Stop signals the worker's whole process group: SIGTERM, then SIGKILL if it
+// does not exit within a few seconds.
 func (s *Supervisor) Stop() {
-	if s.cmd != nil && s.cmd.Process != nil {
-		_ = s.cmd.Process.Kill()
+	if s.cmd == nil || s.cmd.Process == nil {
+		return
+	}
+	pgid, err := syscall.Getpgid(s.cmd.Process.Pid)
+	if err != nil {
+		pgid = s.cmd.Process.Pid
+	}
+	_ = syscall.Kill(-pgid, syscall.SIGTERM)
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = s.cmd.Process.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
 	}
 }
 

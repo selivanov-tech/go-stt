@@ -23,6 +23,7 @@ type Config struct {
 	WorkerDir       string  // working dir for the worker command
 	WorkerAutostart bool
 	QueueWorkers    int // worker-pool size
+	QueueBuffer     int // queued-jobs buffer before Submit blocks
 }
 
 func Load() Config {
@@ -36,6 +37,7 @@ func Load() Config {
 		WorkerDir:       getenv("STT_WORKER_DIR", "../py-stt"),
 		WorkerAutostart: getenv("STT_WORKER_AUTOSTART", "false") == "true",
 		QueueWorkers:    atoiDefault(getenv("STT_QUEUE_WORKERS", "2"), 2),
+		QueueBuffer:     atoiDefault(getenv("STT_QUEUE_BUFFER", "256"), 256),
 	}
 }
 
