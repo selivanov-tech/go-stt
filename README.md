@@ -117,7 +117,7 @@ make test     # go test ./...   (CI runs it with -race)
 make lint     # golangci-lint v2: default set + bodyclose, misspell, unconvert; gofmt + goimports
 ```
 
-Tests cover the API handlers (with a fake engine and store), config validation, the queue (shutdown under load, `ErrClosed`), and the store (eviction). CI: [`ci.yml`](.github/workflows/ci.yml) runs lint and race tests on every push and pull request.
+Tests cover the API handlers (health, sync transcribe, missing-audio validation, the async job lifecycle, unknown job → 404) with a fake engine, config validation, the store (backend selection and oldest-first eviction), and the queue (every submitted task runs). CI: [`ci.yml`](.github/workflows/ci.yml) runs lint and race tests on every push and pull request.
 
 ## Roadmap
 
