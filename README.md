@@ -8,14 +8,14 @@ Module `github.com/selivanov-tech/go-stt` · Go 1.26 · standard library only (n
 
 ## Status
 
-**Step 1 done: the scaffold runs end to end with the mock engine.** HTTP API, in-process worker pool, in-memory job store, worker supervision, config validation, graceful shutdown, tests and CI are in place. Real local models work through the Python worker (faster-whisper, MLX Whisper). What is still a stub is listed under Roadmap; the code says so too (`CloudEngine` and the sqlite/postgres store return "not implemented").
+**Local models run end to end.** HTTP API, in-process worker pool, in-memory job store, worker supervision, config validation, graceful shutdown, tests and CI are in place. Real local models run through the Python worker: MLX Whisper and Parakeet on Apple Silicon, faster-whisper on CPU. Transcripts come back with timed segments, and `make up` keeps the stack running in the background. What is still a stub is listed under Roadmap; the code says so too (`CloudEngine` and the sqlite/postgres store return "not implemented").
 
 ```mermaid
 flowchart LR
     client(["clients"])
 
     subgraph gostt ["go-stt"]
-        api["HTTP API<br/>/healthz · /v1/transcribe (sync)<br/>/v1/jobs · /v1/jobs/{id} (async)"]
+        api["HTTP API<br/>/healthz · /v1/engines<br/>/v1/transcribe (sync)<br/>/v1/jobs · /v1/jobs/{id} (async)"]
         queue["in-process worker pool<br/>bounded, ctx-cancelled shutdown"]
         store["job store<br/>memory (bounded) · sqlite/postgres (stub)"]
         engine{{"engine router<br/>python:&lt;key&gt; · cloud (stub)"}}
@@ -27,7 +27,7 @@ flowchart LR
     end
 
     client -- "POST audio ref" --> api
-    engine -- "HTTP /transcribe" --> worker["py-stt worker<br/>mock · faster_whisper · mlx_whisper"]
+    engine -- "HTTP /transcribe" --> worker["py-stt worker<br/>mlx_whisper · parakeet_mlx · faster_whisper · mock"]
     sup -. "own process group" .-> worker
 ```
 
@@ -35,58 +35,64 @@ Design and locked decisions: [SPEC.md](SPEC.md).
 
 ## Run
 
-Local, mock engine, no models:
+Real local models on Apple Silicon, in the background:
 
 ```bash
-( cd ../py-stt && uv sync )     # one-time: the worker's env
-make dev                        # go service :8080, autostarts the worker :8090
-
-curl localhost:8080/healthz
-curl -X POST localhost:8080/v1/transcribe \
-  -H 'content-type: application/json' \
-  -d '{"audio_path":"clip.wav","language":"en"}'
+( cd ../py-stt && make sync-local )   # one-time: worker env with MLX Whisper + Parakeet
+make up                               # 127.0.0.1:8080, supervises the worker on 127.0.0.1:8090
+make status                           # health + engines with install status
+make logs                             # service and worker log: var/go-stt.log
+make down                             # stops the service and its worker
 ```
 
-Real model on Apple Silicon:
+`make up` takes `UP_ENGINE` (default engine for requests without one, `python:mlx_whisper`), `ADDR` and `WORKER_PORT`, so a second stack — for example from a worktree — runs next to the first: `ADDR=127.0.0.1:8081 WORKER_PORT=8091 make up`. It uses the worker env of `PY_STT` (default `../py-stt`). `make dev` runs the same stack in the foreground with the mock engine.
+
+Transcribe a long recording through the queue:
 
 ```bash
-( cd ../py-stt && uv sync --extra mlx && make worker )   # terminal 1
-STT_DEFAULT_ENGINE=python:mlx_whisper make server        # terminal 2
-```
-
-Async path:
-
-```bash
-curl -X POST localhost:8080/v1/jobs -H 'content-type: application/json' \
-  -d '{"audio_url":"https://example.com/clip.wav","engine":"python:faster_whisper"}'
+curl -X POST 127.0.0.1:8080/v1/jobs -H 'content-type: application/json' \
+  -d '{"audio_path":"/abs/path/clip.m4a","engine":"python:parakeet_mlx","language":"ru"}'
 # → 202 {"job_id":"…","status":"queued"}
-curl localhost:8080/v1/jobs/<job_id>
-# → {"job_id":"…","status":"done","engine":"faster_whisper","text":"…","latency_ms":1234}
+curl 127.0.0.1:8080/v1/jobs/<job_id>
+# → {"status":"done","engine":"parakeet_mlx","model":"tdt-0.6b-v3","text":"…","latency_ms":…,
+#    "audio_duration_s":731.8,"segments":[{"start":0,"end":4.2,"text":"…"}, …]}
 ```
+
+Several engines on one recording, side by side: `make compare` in py-stt.
 
 ## API
 
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/healthz` | status, profile, default engine, worker URL |
-| `POST` | `/v1/transcribe` | sync transcribe; blocks until the engine answers (5 min cap) |
+| `GET` | `/v1/engines` | the worker's engines: spec, default model, languages, status (`available` · `not installed` · `stub` · `built-in`), and which are loaded; `502` when the worker is down |
+| `POST` | `/v1/transcribe` | sync transcribe; blocks until the engine answers (`STT_ENGINE_TIMEOUT`, default 30 min) |
 | `POST` | `/v1/jobs` | enqueue; returns `202 {job_id, status:"queued"}`; `503` when the queue is shut down |
-| `GET` | `/v1/jobs/{id}` | job state: `queued · running · done · failed`, text, error, latency |
+| `GET` | `/v1/jobs/{id}` | job state `queued · running · done · failed`; when done: text, engine, model, detected language, audio duration, segments, latency |
 
 Request body (both transcribe routes), one audio field required:
 
 ```json
-{ "audio_path": "…", "audio_url": "…", "audio_base64": "…", "language": "en", "engine": "python:mlx_whisper", "model": "large-v3-turbo" }
+{ "audio_path": "…", "audio_url": "…", "audio_base64": "…", "language": "ru", "engine": "python:mlx_whisper", "model": "large-v3" }
 ```
 
 Requests are capped at 32 MiB. `engine` defaults to `STT_DEFAULT_ENGINE`.
+
+| Engine spec | Models | Notes |
+|---|---|---|
+| `python:mlx_whisper` | `large-v3-turbo` (default), `large-v3`, `medium`, `small`, any HF repo | uses `language` as a hint |
+| `python:parakeet_mlx` | `tdt-0.6b-v3` (default, 25 European languages incl. English and Russian), `tdt-0.6b-v2` (English) | detects the language itself; long files are chunked |
+| `python:faster_whisper` | `large-v3` (default) | CPU |
+| `python:mock` | — | fake transcript for wiring and tests |
+
+The worker runs one transcription at a time, because local models share one GPU. `STT_QUEUE_WORKERS` sets how many jobs are sent to the worker at once, not how many run in parallel.
 
 ## How it is built
 
 | Package | What it does |
 |---|---|
-| `internal/api` | `net/http` mux with Go 1.22+ method routing; sync handler, submit handler, poll handler, health. Job IDs are 96-bit random hex. |
-| `internal/engine` | `Engine` interface (`Name`, `Transcribe(ctx, AudioRef, Options) (Result, error)`). `Build(spec)` routes `python:<key>` and `mock` to the HTTP worker client, anything else to `CloudEngine` (stub). Swapping HTTP for gRPC later is a new `Engine`, not a caller change. |
+| `internal/api` | `net/http` mux with Go 1.22+ method routing; sync handler, submit handler, poll handler, health, and an engines proxy over the worker's `/health`. Job IDs are 96-bit random hex. |
+| `internal/engine` | `Engine` interface (`Name`, `Transcribe(ctx, AudioRef, Options) (Result, error)`); `Result` carries text, model, detected language, audio duration and segments. `Build(spec, workerURL, timeout)` routes `python:<key>` and `mock` to the HTTP worker client, anything else to `CloudEngine` (stub). Swapping HTTP for gRPC later is a new `Engine`, not a caller change. |
 | `internal/queue` | `Queue` interface + `InProc`: a bounded worker pool. The task channel is never closed; shutdown cancels a context, so no `Submit` can pin a lock across a blocking send and the shutdown deadline always wins. `Submit` after shutdown returns `ErrClosed`. |
 | `internal/store` | `Store` interface + `Memory`: RW-mutex map bounded to 10,000 jobs with oldest-first eviction. `Build("sqlite"|"postgres")` returns "not implemented" on purpose. |
 | `internal/worker` | `Supervisor` starts the Python worker in its own process group, `Stop` sends `SIGTERM` to the group and `SIGKILL` after 5 s; `WaitHealthy` polls `/health` for up to 60 s. |
@@ -97,15 +103,16 @@ Requests are capped at 32 MiB. `engine` defaults to `STT_DEFAULT_ENGINE`.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `STT_ADDR` | `:8080` | listen address |
+| `STT_ADDR` | `127.0.0.1:8080` | listen address; loopback by default, because requests name local files and the audio is private |
 | `STT_PROFILE` | `local` | `local` or `production`; production requires a durable store |
 | `STT_STORE` | `memory` | `memory` works; `sqlite` / `postgres` are not implemented yet |
-| `STT_DEFAULT_ENGINE` | `python:mock` | `python:<mock|faster_whisper|mlx_whisper>` or a cloud provider name (stub) |
+| `STT_DEFAULT_ENGINE` | `python:mock` | `python:<mock|faster_whisper|mlx_whisper|parakeet_mlx>` or a cloud provider name (stub) |
+| `STT_ENGINE_TIMEOUT` | `30m` | cap for one transcription, sync or queued (Go duration) |
 | `STT_QUEUE_WORKERS` | `2` | worker-pool size |
 | `STT_QUEUE_BUFFER` | `256` | queued jobs before `Submit` blocks |
 | `STT_WORKER_URL` | `http://127.0.0.1:8090` | py-stt worker base URL |
-| `STT_WORKER_AUTOSTART` | `false` | start the worker from this process (`make dev` sets it) |
-| `STT_WORKER_CMD` / `STT_WORKER_DIR` | — | command and working dir for the supervised worker |
+| `STT_WORKER_AUTOSTART` | `false` | start the worker from this process (`make dev` and `make up` set it) |
+| `STT_WORKER_CMD` / `STT_WORKER_DIR` | — | command and working dir for the supervised worker; the command is split on spaces |
 | `DEEPGRAM_API_KEY` … | — | reserved for the cloud engines (not wired yet) |
 
 See [`.env.example`](.env.example).
@@ -117,13 +124,13 @@ make test     # go test ./...   (CI runs it with -race)
 make lint     # golangci-lint v2: default set + bodyclose, misspell, unconvert; gofmt + goimports
 ```
 
-Tests cover the API handlers (health, sync transcribe, missing-audio validation, the async job lifecycle, unknown job → 404) with a fake engine, config validation, the store (backend selection and oldest-first eviction), and the queue (every submitted task runs). CI: [`ci.yml`](.github/workflows/ci.yml) runs lint and race tests on every push and pull request.
+Tests cover the API handlers (health, engines listing and `502` with the worker down, sync transcribe, missing-audio validation, the async job lifecycle with model, duration and segments, unknown job → 404) with a fake worker, config (validation, engine timeout parsing, loopback default address), the store (backend selection and oldest-first eviction), and the queue (every submitted task runs). CI: [`ci.yml`](.github/workflows/ci.yml) runs lint and race tests on every push and pull request.
 
 ## Roadmap
 
 From [SPEC.md](SPEC.md), in order:
 
-1. Run the eval in py-stt on real EN/RU recordings and pick the default model.
+1. Run the eval in py-stt on hand-transcribed EN/RU recordings and pick the default model.
 2. A real cloud engine in Go (Deepgram or AssemblyAI) for the `production` profile, plus API-key auth.
 3. Durable job store (SQLite, then Postgres) so `production` can boot.
 4. macOS voice-input app as the first client of `/v1/transcribe`.
