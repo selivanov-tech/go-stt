@@ -2,6 +2,9 @@
 /bin/
 *.test
 
+# make up: pid file and log
+/var/
+
 # Env / secrets
 .env
 .env.local
