@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 )
 
 type Profile string
@@ -12,6 +13,9 @@ const (
 	ProfileLocal      Profile = "local"
 	ProfileProduction Profile = "production"
 )
+
+// DefaultEngineTimeout leaves room for long recordings on local models.
+const DefaultEngineTimeout = 30 * time.Minute
 
 type Config struct {
 	Addr            string  // HTTP listen address
@@ -22,13 +26,14 @@ type Config struct {
 	WorkerCmd       string  // optional command to autostart the worker
 	WorkerDir       string  // working dir for the worker command
 	WorkerAutostart bool
-	QueueWorkers    int // worker-pool size
-	QueueBuffer     int // queued-jobs buffer before Submit blocks
+	QueueWorkers    int           // worker-pool size
+	QueueBuffer     int           // queued-jobs buffer before Submit blocks
+	EngineTimeout   time.Duration // cap for one transcription, sync or queued
 }
 
 func Load() Config {
 	return Config{
-		Addr:            getenv("STT_ADDR", ":8080"),
+		Addr:            getenv("STT_ADDR", "127.0.0.1:8080"),
 		Profile:         Profile(getenv("STT_PROFILE", "local")),
 		DefaultEngine:   getenv("STT_DEFAULT_ENGINE", "python:mock"),
 		Store:           getenv("STT_STORE", "memory"),
@@ -38,6 +43,7 @@ func Load() Config {
 		WorkerAutostart: getenv("STT_WORKER_AUTOSTART", "false") == "true",
 		QueueWorkers:    atoiDefault(getenv("STT_QUEUE_WORKERS", "2"), 2),
 		QueueBuffer:     atoiDefault(getenv("STT_QUEUE_BUFFER", "256"), 256),
+		EngineTimeout:   durationDefault(getenv("STT_ENGINE_TIMEOUT", ""), DefaultEngineTimeout),
 	}
 }
 
@@ -73,6 +79,13 @@ func getenv(key, def string) string {
 func atoiDefault(s string, def int) int {
 	if n, err := strconv.Atoi(s); err == nil {
 		return n
+	}
+	return def
+}
+
+func durationDefault(s string, def time.Duration) time.Duration {
+	if d, err := time.ParseDuration(s); err == nil && d > 0 {
+		return d
 	}
 	return def
 }

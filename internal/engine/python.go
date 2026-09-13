@@ -20,13 +20,13 @@ type PythonEngine struct {
 	client   *http.Client
 }
 
-func NewPythonEngine(pyEngine, baseURL, model string) *PythonEngine {
+func NewPythonEngine(pyEngine, baseURL, model string, timeout time.Duration) *PythonEngine {
 	return &PythonEngine{
 		pyEngine: pyEngine,
 		name:     "python:" + pyEngine,
 		baseURL:  baseURL,
 		model:    model,
-		client:   &http.Client{Timeout: 5 * time.Minute},
+		client:   &http.Client{Timeout: timeout},
 	}
 }
 

@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestValidate(t *testing.T) {
 	cases := []struct {
@@ -24,5 +27,32 @@ func TestValidate(t *testing.T) {
 				t.Fatalf("Validate() err = %v, wantErr = %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestLoadEngineTimeout(t *testing.T) {
+	cases := []struct {
+		env  string
+		want time.Duration
+	}{
+		{"45m", 45 * time.Minute},
+		{"", DefaultEngineTimeout},
+		{"soon", DefaultEngineTimeout},
+		{"-1m", DefaultEngineTimeout},
+	}
+	for _, tc := range cases {
+		t.Run(tc.env, func(t *testing.T) {
+			t.Setenv("STT_ENGINE_TIMEOUT", tc.env)
+			if got := Load().EngineTimeout; got != tc.want {
+				t.Fatalf("EngineTimeout = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadListensOnLoopbackByDefault(t *testing.T) {
+	t.Setenv("STT_ADDR", "")
+	if got := Load().Addr; got != "127.0.0.1:8080" {
+		t.Fatalf("Addr = %q, want 127.0.0.1:8080", got)
 	}
 }
