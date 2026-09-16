@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -26,12 +27,16 @@ type Server struct {
 }
 
 func NewServer(cfg config.Config, q queue.Queue, st store.Store) *Server {
+	if cfg.EngineTimeout <= 0 {
+		cfg.EngineTimeout = config.DefaultEngineTimeout
+	}
 	return &Server{cfg: cfg, queue: q, store: st}
 }
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /v1/engines", s.handleEngines)
 	mux.HandleFunc("POST /v1/transcribe", s.handleSync)
 	mux.HandleFunc("POST /v1/jobs", s.handleSubmit)
 	mux.HandleFunc("GET /v1/jobs/{id}", s.handleJob)
@@ -77,7 +82,7 @@ func (s *Server) engineFor(spec string) engine.Engine {
 	if spec == "" {
 		spec = s.cfg.DefaultEngine
 	}
-	return engine.Build(spec, s.cfg.WorkerURL)
+	return engine.Build(spec, s.cfg.WorkerURL, s.cfg.EngineTimeout)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -89,13 +94,54 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleEngines lists the worker's engines with their install status, so a client
+// can see which local models are ready before it sends audio.
+func (s *Server) handleEngines(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.cfg.WorkerURL+"/health", nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "worker unreachable: "+err.Error())
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("worker health returned %d", resp.StatusCode))
+		return
+	}
+
+	var health struct {
+		Catalog []map[string]any `json:"catalog"`
+		Loaded  []string         `json:"loaded"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		writeError(w, http.StatusBadGateway, "decode worker health: "+err.Error())
+		return
+	}
+	for _, e := range health.Catalog {
+		if key, ok := e["key"].(string); ok {
+			e["spec"] = "python:" + key
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"default_engine": s.cfg.DefaultEngine,
+		"engines":        health.Catalog,
+		"loaded":         health.Loaded,
+	})
+}
+
 func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	req, ok := decodeTranscribe(w, r)
 	if !ok {
 		return
 	}
 	eng := s.engineFor(req.Engine)
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.EngineTimeout)
 	defer cancel()
 
 	res, err := eng.Transcribe(ctx, req.audio(), req.opts())
@@ -125,7 +171,17 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			s.store.Put(job.Job{ID: id, Status: job.StatusFailed, Engine: engName, Error: err.Error()})
 			return
 		}
-		s.store.Put(job.Job{ID: id, Status: job.StatusDone, Engine: res.Engine, Text: res.Text, LatencyMS: res.LatencyMS})
+		s.store.Put(job.Job{
+			ID:               id,
+			Status:           job.StatusDone,
+			Engine:           res.Engine,
+			Model:            res.Model,
+			Text:             res.Text,
+			LatencyMS:        res.LatencyMS,
+			DetectedLanguage: res.DetectedLanguage,
+			AudioDurationS:   res.AudioDurationS,
+			Segments:         res.Segments,
+		})
 	})
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "queue unavailable: "+err.Error())
