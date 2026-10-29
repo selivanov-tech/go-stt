@@ -1,22 +1,22 @@
 # stt-service — spec & decisions
 
-Simple English. This file records the locked decisions and the plan.
+This file records the locked decisions and the plan.
 
 ## Goal
 
-One reusable speech-to-text backend for all my projects:
+One reusable speech-to-text backend for several applications:
 - macOS voice-input app (like Glaido): hotkey → speak → text typed into any app.
 - Telegram bot: send a voice message → get text.
-- English coach: send a recording → get the transcript to analyze.
+- English-coaching assistant: send a recording → get the transcript to analyze.
 
-I record in **English and Russian**. I want it to run **locally** (private,
+Target languages: **English and Russian**. It should run **locally** (private,
 on-device) and also **deploy** cheaply.
 
 ## Locked decisions
 
 1. **Split by responsibility.**
    - **Go** = the service: HTTP API, queue, worker pool, job store, supervision.
-     This is the part with real engineering and the main Go learning.
+     This is the part with the real engineering.
    - **Python** = the models: a thin worker, `audio → text`. The only Python in
      the serving path. Same engine code the eval uses.
 2. **Engines behind one interface** (`internal/engine`). Impls: the Python
@@ -78,13 +78,13 @@ engine (Go-direct). Worker engine keys:
 | `mlx_whisper` | local (Apple Silicon) | ✅ | ✅ | ready |
 | `whisper_cpp` | local | ✅ | ✅ | stub |
 | `apple_speech` | local (built-in) | ✅ | ✅ | stub (needs Swift helper) |
-| `parakeet_mlx` | local (Apple Silicon) | ✅ | ⚠️ weak | stub |
+| `parakeet_mlx` | local (Apple Silicon) | ✅ | ✅ | ready (`tdt-0.6b-v3`, 25 European languages) |
 | `deepgram` / `assemblyai` / `elevenlabs` | cloud | ✅ | ✅ | stub |
 
 ## Eval (`stt_eval`)
 
-Offline tool to pick the model: run engines on my recordings (manifest =
-`s3://`/`https://`/local audio + my hand-written transcript + language), score
+Offline tool to pick the model: run engines on a set of recordings (manifest =
+`s3://`/`https://`/local audio + a hand-written reference transcript + language), score
 **similarity %** (WER, CER, char-similarity), averaged **per language**, logged
 to MLflow. The eval and the worker share `stt_engines`, so "the winner" is the
 same code the worker serves. Whisper accuracy is the same across runtimes (same
@@ -98,7 +98,7 @@ MLX result.
 3. ⬜ Real cloud engine in Go (Deepgram or AssemblyAI) for the production profile.
 4. ⬜ macOS voice-input app (first client) → calls `/v1/transcribe` locally.
 5. ⬜ Swap in-process queue → asynq/Redis; add gRPC + streaming for real-time.
-6. ⬜ Point Telegram bot + English coach at the service.
+6. ⬜ Point the other clients (Telegram bot, English-coaching assistant) at the service.
 
 ## Open questions
 - LLM cleanup step (fix casing/punctuation) — in Go, in the worker, or a client concern?
